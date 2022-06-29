@@ -38,9 +38,13 @@ func errnoErr(e syscall.Errno) error {
 }
 
 var (
+	modadvapi32 = windows.NewLazySystemDLL("advapi32.dll")
 	modkernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	modpsapi    = windows.NewLazySystemDLL("psapi.dll")
 
+	procRegGetValueW      = modadvapi32.NewProc("RegGetValueW")
+	procCloseHandle       = modkernel32.NewProc("CloseHandle")
+	procCreateFile        = modkernel32.NewProc("CreateFile")
 	procDeviceIoControl   = modkernel32.NewProc("DeviceIoControl")
 	procFreeLibrary       = modkernel32.NewProc("FreeLibrary")
 	procGetProcAddress    = modkernel32.NewProc("GetProcAddress")
@@ -48,44 +52,103 @@ var (
 	procEnumDeviceDrivers = modpsapi.NewProc("EnumDeviceDrivers")
 )
 
-func DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32, lpBytesReturned *uint32) (flag bool) {
-	r0, _, _ := syscall.Syscall9(procDeviceIoControl.Addr(), 7, uintptr(hDevice), uintptr(dwIoControlCode), uintptr(lpInBuffer), uintptr(nInBufferSize), uintptr(lpOutBuffer), uintptr(nOutBufferSize), uintptr(unsafe.Pointer(lpBytesReturned)), 0, 0)
-	flag = r0 != 0
+func RegGetValueW(hkey int, lpSubKey string, lpValue string, dwFlags uint32, pdwType *uint32, pvData uintptr, pcbData *uint32) (ret int, err error) {
+	var _p0 *uint16
+	_p0, err = syscall.UTF16PtrFromString(lpSubKey)
+	if err != nil {
+		return
+	}
+	var _p1 *uint16
+	_p1, err = syscall.UTF16PtrFromString(lpValue)
+	if err != nil {
+		return
+	}
+	return _RegGetValueW(hkey, _p0, _p1, dwFlags, pdwType, pvData, pcbData)
+}
+
+func _RegGetValueW(hkey int, lpSubKey *uint16, lpValue *uint16, dwFlags uint32, pdwType *uint32, pvData uintptr, pcbData *uint32) (ret int, err error) {
+	r0, _, e1 := syscall.Syscall9(procRegGetValueW.Addr(), 7, uintptr(hkey), uintptr(unsafe.Pointer(lpSubKey)), uintptr(unsafe.Pointer(lpValue)), uintptr(dwFlags), uintptr(unsafe.Pointer(pdwType)), uintptr(pvData), uintptr(unsafe.Pointer(pcbData)), 0, 0)
+	ret = int(r0)
+	if ret == 0 {
+		err = errnoErr(e1)
+	}
 	return
 }
 
-func FreeLibrary(hLibModule uintptr) (flag bool) {
-	r0, _, _ := syscall.Syscall(procFreeLibrary.Addr(), 1, uintptr(hLibModule), 0, 0)
-	flag = r0 != 0
+func CloseHandle(hObject HANDLE) (ret bool) {
+	r0, _, _ := syscall.Syscall(procCloseHandle.Addr(), 1, uintptr(hObject), 0, 0)
+	ret = r0 != 0
 	return
 }
 
-func GetProcAddress(hModule uintptr, lpProcName string) (address uintptr) {
+func CreateFile(lpFileName string, dwDesiredAccess uint32, dwShareMode uint32, lpSecurityAttributes *SECURITY_ATTRIBUTES, dwCreationDisposition uint32, dwFlagsAndAttributes uint32, hTemplateFile uintptr) (handle uintptr, err error) {
 	var _p0 *byte
-	_p0, _ = syscall.BytePtrFromString(lpProcName)
+	_p0, err = syscall.BytePtrFromString(lpFileName)
+	if err != nil {
+		return
+	}
+	return _CreateFile(_p0, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile)
+}
+
+func _CreateFile(lpFileName *byte, dwDesiredAccess uint32, dwShareMode uint32, lpSecurityAttributes *SECURITY_ATTRIBUTES, dwCreationDisposition uint32, dwFlagsAndAttributes uint32, hTemplateFile uintptr) (handle uintptr, err error) {
+	r0, _, e1 := syscall.Syscall9(procCreateFile.Addr(), 7, uintptr(unsafe.Pointer(lpFileName)), uintptr(dwDesiredAccess), uintptr(dwShareMode), uintptr(unsafe.Pointer(lpSecurityAttributes)), uintptr(dwCreationDisposition), uintptr(dwFlagsAndAttributes), uintptr(hTemplateFile), 0, 0)
+	handle = uintptr(r0)
+	if handle == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
+func DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32, lpBytesReturned *uint32) (ret bool) {
+	r0, _, _ := syscall.Syscall9(procDeviceIoControl.Addr(), 7, uintptr(hDevice), uintptr(dwIoControlCode), uintptr(lpInBuffer), uintptr(nInBufferSize), uintptr(lpOutBuffer), uintptr(nOutBufferSize), uintptr(unsafe.Pointer(lpBytesReturned)), 0, 0)
+	ret = r0 != 0
+	return
+}
+
+func FreeLibrary(hLibModule uintptr) (ret bool) {
+	r0, _, _ := syscall.Syscall(procFreeLibrary.Addr(), 1, uintptr(hLibModule), 0, 0)
+	ret = r0 != 0
+	return
+}
+
+func GetProcAddress(hModule uintptr, lpProcName string) (address uintptr, err error) {
+	var _p0 *byte
+	_p0, err = syscall.BytePtrFromString(lpProcName)
+	if err != nil {
+		return
+	}
 	return _GetProcAddress(hModule, _p0)
 }
 
-func _GetProcAddress(hModule uintptr, lpProcName *byte) (address uintptr) {
-	r0, _, _ := syscall.Syscall(procGetProcAddress.Addr(), 2, uintptr(hModule), uintptr(unsafe.Pointer(lpProcName)), 0)
+func _GetProcAddress(hModule uintptr, lpProcName *byte) (address uintptr, err error) {
+	r0, _, e1 := syscall.Syscall(procGetProcAddress.Addr(), 2, uintptr(hModule), uintptr(unsafe.Pointer(lpProcName)), 0)
 	address = uintptr(r0)
+	if address == 0 {
+		err = errnoErr(e1)
+	}
 	return
 }
 
-func LoadLibraryW(lpLibFileName string) (handle uintptr) {
+func LoadLibraryW(lpLibFileName string) (handle uintptr, err error) {
 	var _p0 *uint16
-	_p0, _ = syscall.UTF16PtrFromString(lpLibFileName)
+	_p0, err = syscall.UTF16PtrFromString(lpLibFileName)
+	if err != nil {
+		return
+	}
 	return _LoadLibraryW(_p0)
 }
 
-func _LoadLibraryW(lpLibFileName *uint16) (handle uintptr) {
-	r0, _, _ := syscall.Syscall(procLoadLibraryW.Addr(), 1, uintptr(unsafe.Pointer(lpLibFileName)), 0, 0)
+func _LoadLibraryW(lpLibFileName *uint16) (handle uintptr, err error) {
+	r0, _, e1 := syscall.Syscall(procLoadLibraryW.Addr(), 1, uintptr(unsafe.Pointer(lpLibFileName)), 0, 0)
 	handle = uintptr(r0)
+	if handle == 0 {
+		err = errnoErr(e1)
+	}
 	return
 }
 
-func EnumDeviceDrivers(lpImageBase uintptr, cb uint32, lpcbNeeded *uint32) (flag bool) {
+func EnumDeviceDrivers(lpImageBase uintptr, cb uint32, lpcbNeeded *uint32) (ret bool) {
 	r0, _, _ := syscall.Syscall(procEnumDeviceDrivers.Addr(), 3, uintptr(lpImageBase), uintptr(cb), uintptr(unsafe.Pointer(lpcbNeeded)))
-	flag = r0 != 0
+	ret = r0 != 0
 	return
 }
