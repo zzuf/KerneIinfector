@@ -62,6 +62,7 @@ var (
 	procGetProcAddress             = modkernel32.NewProc("GetProcAddress")
 	procLoadLibraryW               = modkernel32.NewProc("LoadLibraryW")
 	procEnumDeviceDrivers          = modpsapi.NewProc("EnumDeviceDrivers")
+	procGetDeviceDriverBaseNameW   = modpsapi.NewProc("GetDeviceDriverBaseNameW")
 )
 
 func BuildSecurityDescriptorW(pOwner unsafe.Pointer, pGroup unsafe.Pointer, cCountOfAccessEntries int64, pListOfAccessEntries *windows.EXPLICIT_ACCESS, cCountOfAuditEntries int64, pListOfAuditEntries *windows.EXPLICIT_ACCESS, pOldSD unsafe.Pointer, pSizeNewSD uint32, pNewSD *uintptr) (ret uint32) {
@@ -310,5 +311,14 @@ func _LoadLibraryW(lpLibFileName *uint16) (handle uintptr, err error) {
 func EnumDeviceDrivers(lpImageBase uintptr, cb uint32, lpcbNeeded *uint32) (ret bool) {
 	r0, _, _ := syscall.Syscall(procEnumDeviceDrivers.Addr(), 3, uintptr(lpImageBase), uintptr(cb), uintptr(unsafe.Pointer(lpcbNeeded)))
 	ret = r0 != 0
+	return
+}
+
+func GetDeviceDriverBaseNameW(lpImageBase uintptr, lpBaseName uintptr, nSize uint32) (ret uint32, err error) {
+	r0, _, e1 := syscall.Syscall(procGetDeviceDriverBaseNameW.Addr(), 3, uintptr(lpImageBase), uintptr(lpBaseName), uintptr(nSize))
+	ret = uint32(r0)
+	if ret == 0 {
+		err = errnoErr(e1)
+	}
 	return
 }

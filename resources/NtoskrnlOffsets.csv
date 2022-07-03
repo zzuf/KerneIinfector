@@ -389,7 +389,6 @@ ntoskrnl_19041-1202.exe,cec320,cec120,cebf20,87a,c197d0,20,60
 ntoskrnl_19041-1237.exe,cec320,cec120,cebf20,87a,c197d0,20,60
 ntoskrnl_19041-1266.exe,cec3a0,cec1a0,cebfa0,87a,c19770,20,60
 ntoskrnl_19041-1288.exe,cec1a0,cebfa0,cec3a0,87a,c19790,20,60
-ntoskrnl_19041-1766.exe,cec4a0,cec2a0,cec0a0,87a,c19810,20,60
 ntoskrnl_19041-264.exe,cec060,cec260,cebe60,87a,c19858,20,60
 ntoskrnl_19041-329.exe,cec320,cebf20,cec120,87a,c19898,20,60
 ntoskrnl_19041-331.exe,cec320,cebf20,cec120,87a,c19898,20,60
@@ -440,3 +439,5 @@ ntoskrnl_6003-21251.exe,1a9d00,1a9ae0,1a9a80,0,0,10,50
 ntoskrnl_9200-23516.exe,2452a0,2454c0,2456e0,0,0,10,50
 ntoskrnl_19041-1415.exe,cec1e0,cec3e0,cebfe0,87a,c197c0,20,60
 ntoskrnl_22000-376.exe,cf5e00,cf6200,cf6000,87a,c15d40,20,60
+ntoskrnl_19041-1766.exe,cec4a0,cec2a0,cec0a0,87a,c19810,20,60
+ntoskrnl_19041-1645.exe,cec3a0,cec1a0,cebfa0,87a,c19de8,20,60
