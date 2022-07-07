@@ -1012,6 +1012,10 @@ func isDriverEDR(dName string) bool {
 		"fencry.sys",
 		"symrg.sys",
 		"ndgdmk.sys",
+		"klflt.sys",
+		"klupd_klif_arkmon.sys",
+		"klhk.sys",
+		"klgse.sys",
 	}
 	ret := false
 	for _, driver := range edrDrivers {
