@@ -16,7 +16,7 @@ import (
 //sys DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32,lpBytesReturned *uint32) (ret bool) = kernel32.DeviceIoControl
 //sys SetEntriesInAclW(cCountOfExplicitEntries uint32, pListOfExplicitEntries *windows.EXPLICIT_ACCESS, OldAcl *windows.ACL, NewAcl **windows.ACL) (ret uint32) = advapi32.SetEntriesInAclW
 
-//go:embed resources/NtoskrnlOffsets.csv
+//go:embed Offsets/NtoskrnlOffsets.csv
 var ntoskrnlOffsetsCSV string
 
 //go:embed resources/RTCore64.sys
@@ -92,8 +92,9 @@ type SYSTEM_HANDLE_INFORMATION struct {
 }
 
 func main() {
-
-	usage := "Usage: kernelinfector.exe OPTION\n/proc - List Process Creation Callbacks\n/delproc <address> - Remove Process Creation Callback"
+	usage := `Usage: kernelinfector.exe OPTION
+/proc - List Process Creation Callbacks
+/delproc <address> - Remove Process Creation Callback`
 	getNtoskrnlVersion()
 	if len(os.Args) < 2 {
 		fmt.Println(usage)

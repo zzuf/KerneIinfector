@@ -323,5 +323,4 @@ func uninstallVulnDriver() {
 	if !status {
 		fmt.Println("ServiceUninstall")
 	}
-
 }
