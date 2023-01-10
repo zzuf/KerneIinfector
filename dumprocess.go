@@ -7,6 +7,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const (
+	//https://github.com/0xrawsec/golang-win32/tree/master/win32/dbghelp
+	MiniDumpWithFullMemory uint32 = 0x00000002
+)
+
 func dumpProcess(processName string, outputFilePath string) {
 	name, err := syscall.UTF16PtrFromString(outputFilePath)
 	if err != nil {
@@ -33,11 +38,15 @@ func dumpProcess(processName string, outputFilePath string) {
 		targetPID = processEntry.ProcessID
 	}
 
-	fmt.Println("Target PID : %s - %d\n", processName, targetPID)
+	fmt.Printf("Target PID : %s - %d\n", processName, targetPID)
 
 	targetHandle, err := windows.OpenProcess(windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, targetPID)
 	if err != nil {
 		panic(err)
+	}
+	isDumped := MiniDumpWriteDump(targetHandle, targetPID, outFile, MiniDumpWithFullMemory, nil, nil, nil)
+	if isDumped {
+		fmt.Printf("Target process dumped successfully\n")
 	}
 
 }
