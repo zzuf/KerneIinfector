@@ -38,14 +38,14 @@ func errnoErr(e syscall.Errno) error {
 }
 
 var (
-	modadvapi32       = windows.NewLazySystemDLL("advapi32.dll")
-	modkernel32       = windows.NewLazySystemDLL("kernel32.dll")
-	modminidumpapiset = windows.NewLazySystemDLL("minidumpapiset.dll")
-	modpsapi          = windows.NewLazySystemDLL("psapi.dll")
+	modadvapi32 = windows.NewLazySystemDLL("advapi32.dll")
+	moddbghelp  = windows.NewLazySystemDLL("dbghelp.dll")
+	modkernel32 = windows.NewLazySystemDLL("kernel32.dll")
+	modpsapi    = windows.NewLazySystemDLL("psapi.dll")
 
 	procSetEntriesInAclW         = modadvapi32.NewProc("SetEntriesInAclW")
+	procMiniDumpWriteDump        = moddbghelp.NewProc("MiniDumpWriteDump")
 	procDeviceIoControl          = modkernel32.NewProc("DeviceIoControl")
-	procMiniDumpWriteDump        = modminidumpapiset.NewProc("MiniDumpWriteDump")
 	procEnumDeviceDrivers        = modpsapi.NewProc("EnumDeviceDrivers")
 	procGetDeviceDriverBaseNameW = modpsapi.NewProc("GetDeviceDriverBaseNameW")
 )
@@ -56,14 +56,14 @@ func SetEntriesInAclW(cCountOfExplicitEntries uint32, pListOfExplicitEntries *wi
 	return
 }
 
-func DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32, lpBytesReturned *uint32) (ret bool) {
-	r0, _, _ := syscall.Syscall9(procDeviceIoControl.Addr(), 7, uintptr(hDevice), uintptr(dwIoControlCode), uintptr(lpInBuffer), uintptr(nInBufferSize), uintptr(lpOutBuffer), uintptr(nOutBufferSize), uintptr(unsafe.Pointer(lpBytesReturned)), 0, 0)
+func MiniDumpWriteDump(handle windows.Handle, ProcessId uint32, hFile windows.Handle, dumpType uint32, exceptionParam unsafe.Pointer, userStreamParam unsafe.Pointer, callbackParam unsafe.Pointer) (ret bool) {
+	r0, _, _ := syscall.Syscall9(procMiniDumpWriteDump.Addr(), 7, uintptr(handle), uintptr(ProcessId), uintptr(hFile), uintptr(dumpType), uintptr(exceptionParam), uintptr(userStreamParam), uintptr(callbackParam), 0, 0)
 	ret = r0 != 0
 	return
 }
 
-func MiniDumpWriteDump(handle windows.Handle, ProcessId uint32, hFile windows.Handle, dumpType uint32, exceptionParam unsafe.Pointer, userStreamParam unsafe.Pointer, callbackParam unsafe.Pointer) (ret bool) {
-	r0, _, _ := syscall.Syscall9(procMiniDumpWriteDump.Addr(), 7, uintptr(handle), uintptr(ProcessId), uintptr(hFile), uintptr(dumpType), uintptr(exceptionParam), uintptr(userStreamParam), uintptr(callbackParam), 0, 0)
+func DeviceIoControl(hDevice uintptr, dwIoControlCode uint32, lpInBuffer uintptr, nInBufferSize uint32, lpOutBuffer uintptr, nOutBufferSize uint32, lpBytesReturned *uint32) (ret bool) {
+	r0, _, _ := syscall.Syscall9(procDeviceIoControl.Addr(), 7, uintptr(hDevice), uintptr(dwIoControlCode), uintptr(lpInBuffer), uintptr(nInBufferSize), uintptr(lpOutBuffer), uintptr(nOutBufferSize), uintptr(unsafe.Pointer(lpBytesReturned)), 0, 0)
 	ret = r0 != 0
 	return
 }

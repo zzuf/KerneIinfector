@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,8 +27,10 @@ func dumpProcess(processName string, outputFilePath string) {
 		panic(err)
 	}
 	var processEntry windows.ProcessEntry32
+	processEntry.Size = uint32(unsafe.Sizeof(processEntry))
 
-	if windows.Process32First(snapShot, &processEntry) != nil {
+	err = windows.Process32First(snapShot, &processEntry)
+	if err != nil {
 		panic(err)
 	}
 	var tmpProcessName string
@@ -38,8 +41,9 @@ func dumpProcess(processName string, outputFilePath string) {
 		targetPID = processEntry.ProcessID
 	}
 
-	fmt.Printf("Target PID : %s - %d\n", processName, targetPID)
-
+	fmt.Printf("%s PID : %d\n", processName, targetPID)
+	// allaccess := uint32(0x000F0000 | 0x00100000 | 0xFFFF)
+	//windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION
 	targetHandle, err := windows.OpenProcess(windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, targetPID)
 	if err != nil {
 		panic(err)

